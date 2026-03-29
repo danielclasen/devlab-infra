@@ -1,0 +1,43 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    'config:recommended',
+    'docker:enableMajor',
+    ':disableRateLimiting',
+    ':dependencyDashboard',
+    ':semanticCommits',
+    ':automergeDigest',
+    ':automergeBranch',
+    ':timezone(Europe/Berlin)',
+    //'github>danielclasen/devlab-infra//.github/renovate/autoMerge.json5',
+    'github>danielclasen/devlab-infra//.github/renovate/customManagers.json5',
+    'github>danielclasen/devlab-infra//.github/renovate/labels.json5',
+    
+  ],
+  dependencyDashboardTitle: 'Renovate Dashboard 🤖',
+  suppressNotifications: [
+    'prEditedNotification',
+    'prIgnoreNotification',
+  ],
+  flux: {
+    managerFilePatterns: [
+      '/flux/apps/.+\\.ya?ml$/',
+      '/flux/clusters/.+\\.ya?ml$/',
+      '/flux/infrastructure/.+\\.ya?ml$/'
+    ]
+  },
+  kubernetes: {
+    managerFilePatterns: [
+      '/flux/apps/.+\\.ya?ml$/',
+      '/flux/clusters/.+\\.ya?ml$/',
+      '/flux/infrastructure/.+\\.ya?ml$/'
+    ]
+  },
+  'helm-values': {
+    commitMessageTopic: "helm values {{depName}}",
+    managerFilePatterns: [
+      '/(^|/)values\\.ya?ml$/',
+      '/(^|/)release.*\\.ya?ml$/'
+    ],
+  }
+}
