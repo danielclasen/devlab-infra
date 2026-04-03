@@ -1,0 +1,211 @@
+---
+clusterName: devlab
+# renovate: datasource=docker depName=ghcr.io/siderolabs/installer
+talosVersion: v1.12.6
+# renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet
+kubernetesVersion: v1.35.3
+endpoint: https://10.200.90.10:6443
+domain: cluster.local
+allowSchedulingOnMasters: true
+additionalApiServerCertSans:
+  - devlab.internal
+nodes:
+  - hostname: n01
+    ipAddress: 10.200.90.111
+    controlPlane: true
+    nodeLabels:
+      storage/linstor-nvme-device: nvme0n1
+      network/uplink: 25G
+      topology.kubernetes.io/rack: rack01
+    schematic: &schematic
+      customization:
+        systemExtensions:
+          officialExtensions:
+            - siderolabs/drbd
+            - siderolabs/intel-ucode
+            - siderolabs/mellanox-mstflint
+            - siderolabs/nvme-cli
+    installDisk: /dev/sda
+    talosImageURL: &talosImageURL factory.talos.dev/metal-installer/fc7e74c58d3dc3d05937f563fe902827bce5261f0ae884aea446522075a7ca7b
+    networkInterfaces:
+      - interface: bond0
+        bond: &bond0-10g
+          mode: 802.3ad
+          lacpRate: fast
+          miimon: 100
+          updelay: 200
+          downdelay: 200
+          xmitHashPolicy: layer3+4
+          interfaces:
+            - eno3
+            - eno4
+        dhcp: true
+        mtu: 1500
+        vip: &vip
+          ip: 10.200.90.10
+        vlans:
+          - vlanId: 299
+            dhcp: false
+            mtu: 1500
+            addresses:
+              - "10.200.99.11/24"
+      - interface: bond1
+        bond: &bond1
+          mode: 802.3ad
+          lacpRate: fast
+          miimon: 100
+          updelay: 200
+          downdelay: 200
+          xmitHashPolicy: layer3+4
+          interfaces:
+            - ens2f0np0
+            - ens2f1np1
+        dhcp: false
+        mtu: 9000
+        vlans:
+          - vlanId: 291
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.91.11/24"
+          - vlanId: 292
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.92.11/24"
+  - hostname: n02
+    ipAddress: 10.200.90.112
+    controlPlane: true
+    nodeLabels:
+      storage/linstor-nvme-device: nvme0n1
+      network/uplink: 25G
+      topology.kubernetes.io/rack: rack01
+    schematic: *schematic
+    installDisk: /dev/sda
+    talosImageURL: *talosImageURL
+    networkInterfaces:
+      - interface: bond0
+        bond: *bond0-10g
+        dhcp: true
+        mtu: 1500
+        vip: *vip
+        vlans:
+          - vlanId: 299
+            dhcp: false
+            mtu: 1500
+            addresses:
+              - "10.200.99.12/24"
+      - interface: bond1
+        bond: *bond1
+        dhcp: false
+        mtu: 9000
+        vlans:
+          - vlanId: 291
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.91.12/24"
+          - vlanId: 292
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.92.12/24"
+  - hostname: n03
+    ipAddress: 10.200.90.113
+    controlPlane: true
+    nodeLabels:
+      storage/linstor-nvme-device: nvme0n1
+      network/uplink: 25G
+      topology.kubernetes.io/rack: rack01
+    schematic: *schematic
+    installDisk: /dev/sda
+    talosImageURL: *talosImageURL
+    networkInterfaces:
+      - interface: bond0
+        bond: &bond0-1g
+          mode: 802.3ad
+          lacpRate: fast
+          miimon: 100
+          updelay: 200
+          downdelay: 200
+          xmitHashPolicy: layer3+4
+          interfaces:
+            - eno1
+            - eno2
+        dhcp: true
+        mtu: 1500
+        vip: *vip
+        vlans:
+          - vlanId: 299
+            dhcp: false
+            mtu: 1500
+            addresses:
+              - "10.200.99.13/24"
+      - interface: bond1
+        bond: *bond1
+        dhcp: false
+        mtu: 9000
+        vlans:
+          - vlanId: 291
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.91.13/24"
+          - vlanId: 292
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.92.13/24"
+  - hostname: n04
+    ipAddress: 10.200.90.114
+    controlPlane: true
+    nodeLabels:
+      storage/linstor-nvme-device: nvme0n1
+      network/uplink: 25G
+      topology.kubernetes.io/rack: rack01
+    schematic: *schematic
+    installDisk: /dev/sda
+    talosImageURL: *talosImageURL
+    networkInterfaces:
+      - interface: bond0
+        bond: *bond0-1g
+        dhcp: true
+        mtu: 1500
+        vip: *vip
+        vlans:
+          - vlanId: 299
+            dhcp: false
+            mtu: 1500
+            addresses:
+              - "10.200.99.14/24"
+      - interface: bond1
+        bond: *bond1
+        dhcp: false
+        mtu: 9000
+        vlans:
+          - vlanId: 291
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.91.14/24"
+          - vlanId: 292
+            dhcp: false
+            mtu: 9000
+            addresses:
+              - "10.200.92.14/24"
+patches:
+  - "@./patches/000-kubelet-patch.yaml"
+  - "@./patches/001-timesync-ntp.yaml"
+controlPlane:
+  kernelModules:
+    - name: drbd
+      parameters:
+        - usermode_helper=disabled
+    - name: drbd_transport_tcp
+    - name: dm-thin-pool
+    - name: mlx5_ib
+    - name: ib_uverbs
+    - name: rdma_cm
+  patches:
+    - "@./patches/controlPlane/000-metrics-listen-patch.yaml"
+    - "@./patches/controlPlane/001-roce-sysctls.yaml"

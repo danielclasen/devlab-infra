@@ -1,0 +1,14 @@
+---
+machine:
+  features:
+    kubePrism:
+      enabled: true
+      port: 7445
+  kubelet:
+    extraArgs:
+      rotate-server-certificates: true
+    nodeIP:
+      validSubnets:
+        - 10.200.90.0/24
+  sysctls:
+    user.max_user_namespaces: "11255"
