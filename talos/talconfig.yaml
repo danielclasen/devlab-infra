@@ -205,7 +205,8 @@ controlPlane:
     - name: dm-thin-pool
     - name: mlx5_ib
     - name: ib_uverbs
-    - name: rdma_cm
+    - name: ib_umad
+    - name: rdma_ucm
   patches:
     - "@./patches/controlPlane/000-metrics-listen-patch.yaml"
     - "@./patches/controlPlane/001-roce-sysctls.yaml"
