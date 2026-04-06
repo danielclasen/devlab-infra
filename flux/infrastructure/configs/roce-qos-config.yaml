@@ -1,0 +1,75 @@
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: roce-dscp-config
+  namespace: kube-system
+  labels:
+    app: roce-dscp-config
+spec:
+  selector:
+    matchLabels:
+      app: roce-dscp-config
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: roce-dscp-config
+    spec:
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: configure-roce-dscp
+          image: ghcr.io/nicolaka/netshoot:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+
+              IFACE="bond1.292"
+
+              until ip link show "${IFACE}" >/dev/null 2>&1; do
+                echo "Waiting for ${IFACE}..."
+                sleep 2
+              done
+
+              # Idempotent: remove existing root qdisc before re-applying
+              tc qdisc del dev "${IFACE}" root 2>/dev/null || true
+
+              # Add prio qdisc as root (all traffic defaults to band 0)
+              tc qdisc add dev "${IFACE}" root handle 1: prio \
+                priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+
+              # Mark RoCEv2 (UDP dst 4791) with DSCP 26 (AF31)
+              # TOS byte: DSCP 26 = 0x68 (26<<2); retain 0x03 preserves ECN bits
+              tc filter add dev "${IFACE}" parent 1: protocol ip prio 10 u32 \
+                match ip protocol 17 0xff \
+                match ip dport 4791 0xffff \
+                action pedit ex munge ip tos set 0x68 retain 0x03 \
+                action csum ip
+
+              echo "=== RoCEv2 DSCP configuration applied on ${IFACE} ==="
+              tc filter show dev "${IFACE}" parent 1:
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: 10m
+              memory: 8Mi
+            limits:
+              cpu: 10m
+              memory: 8Mi
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
