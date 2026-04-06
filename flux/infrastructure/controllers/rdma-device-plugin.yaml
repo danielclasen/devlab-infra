@@ -12,7 +12,9 @@ data:
             "resourceName": "hca_shared_devices",
             "resourcePrefix": "rdma",
             "rdmaHcaMax": 1000,
-            "devices": ["mlx5_bond_0"]
+            "selectors": {
+                "ifNames": ["ens2f0np0"]
+            }
         }]
     }
 ---
