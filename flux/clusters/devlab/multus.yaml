@@ -58,3 +58,18 @@ spec:
         - op: replace
           path: /spec/template/spec/volumes/8/hostPath/path
           value: /var/run/netns/
+        - op: add
+          path: /spec/template/spec/initContainers/0
+          value:
+            name: install-cni-plugins
+            image: alpine:3
+            command:
+              - /bin/sh
+              - -c
+              - "wget -qO /tmp/cni.tgz https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-amd64-v1.9.1.tgz && tar -xzf /tmp/cni.tgz -C /host/opt/cni/bin"
+            securityContext:
+              privileged: true
+            volumeMounts:
+              - name: cnibin
+                mountPath: /host/opt/cni/bin
+                mountPropagation: Bidirectional
