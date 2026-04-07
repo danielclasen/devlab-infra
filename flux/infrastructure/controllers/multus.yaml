@@ -143,11 +143,11 @@ spec:
           command: ["/usr/src/multus-cni/bin/multus-daemon"]
           resources:
             requests:
-              cpu: "100m"
-              memory: "50Mi"
+              cpu: "200m"
+              memory: "100Mi"
             limits:
-              cpu: "100m"
-              memory: "50Mi"
+              cpu: "300m"
+              memory: "150Mi"
           securityContext:
             privileged: true
           terminationMessagePolicy: FallbackToLogsOnError
@@ -166,7 +166,7 @@ spec:
             - name: host-run-k8s-cni-cncf-io
               mountPath: /run/k8s.cni.cncf.io
             - name: host-run-netns
-              mountPath: /run/netns
+              mountPath: /var/run/netns
               mountPropagation: HostToContainer
             - name: multus-daemon-config
               mountPath: /etc/cni/net.d/multus.d
@@ -180,12 +180,23 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
       initContainers:
+        - name: install-cni-plugins
+          image: ghcr.io/containernetworking/plugins:v1.6.2
+          command: ["/bin/sh", "-c", "cp /opt/cni/bin/* /host/opt/cni/bin/"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cnibin
+              mountPath: /host/opt/cni/bin
+              mountPropagation: Bidirectional
         - name: install-multus-binary
           image: ghcr.io/k8snetworkplumbingwg/multus-cni:v4.2.0-thick
           command:
-            - "cp"
-            - "/usr/src/multus-cni/bin/multus-shim"
-            - "/host/opt/cni/bin/multus-shim"
+            - "/usr/src/multus-cni/bin/install_multus"
+            - "-d"
+            - "/host/opt/cni/bin"
+            - "-t"
+            - "thick"
           resources:
             requests:
               cpu: "10m"
@@ -228,4 +239,4 @@ spec:
             path: /run/k8s.cni.cncf.io
         - name: host-run-netns
           hostPath:
-            path: /run/netns/
+            path: /var/run/netns/
