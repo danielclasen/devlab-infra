@@ -1,0 +1,105 @@
+---
+# RoCEv2 perftest server — pinned to n03 (same node as reader-media-function)
+# Loops through ib_send_bw → ib_write_bw → ib_read_bw → ib_send_lat servers.
+# Exposes current test status + RDMA NIC IP via HTTP :8080 for client coordination.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rdma-perf-server
+  namespace: rdma-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rdma-perf-server
+  template:
+    metadata:
+      labels:
+        app: rdma-perf-server
+      annotations:
+        k8s.v1.cni.cncf.io/networks: network/rdma-roce
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: n03
+
+      containers:
+        - name: perftest-server
+          image: ubuntu:22.04
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -eu
+              echo "=== RoCEv2 Perftest Server ==="
+
+              echo "Installing perftest..."
+              apt-get update -qq
+              apt-get install -y -qq perftest iproute2 python3
+              echo "Installation complete."
+
+              NET1_IP=$(ip addr show net1 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+              echo "net1 IP: $NET1_IP"
+              [ -n "$NET1_IP" ] || { echo "ERROR: net1 not found"; exit 1; }
+
+              # Discover RoCEv2 GID index matching net1 IP
+              IP_HEX=$(printf "%02x%02x:%02x%02x" $(echo "$NET1_IP" | tr '.' ' '))
+              echo "Looking for GID containing $IP_HEX with type RoCE v2..."
+              GID_IDX=11
+              for i in $(seq 0 15); do
+                GID=$(cat "/sys/class/infiniband/mlx5_bond_0/ports/1/gids/$i" 2>/dev/null | tr -d '\n') || continue
+                TYPE=$(cat "/sys/class/infiniband/mlx5_bond_0/ports/1/gid_attrs/types/$i" 2>/dev/null | tr -d '\n') || continue
+                if echo "$GID" | grep -qi "$IP_HEX" && echo "$TYPE" | grep -qi "v2"; then
+                  GID_IDX=$i
+                  echo "Found: GID[$i] = $GID (type: $TYPE)"
+                  break
+                fi
+              done
+              echo "Using GID index: $GID_IDX"
+
+              # Serve status file over HTTP on :8080
+              mkdir -p /tmp/srv
+              printf "waiting\n%s\n" "$NET1_IP" > /tmp/srv/status.txt
+              python3 -m http.server 8080 --directory /tmp/srv --bind 0.0.0.0 >/dev/null 2>&1 &
+
+              BW_FLAGS="-d mlx5_bond_0 -x $GID_IDX --report_gbits -s 65536 -D 10 -R"
+              LAT_FLAGS="-d mlx5_bond_0 -x $GID_IDX -s 2 -n 1000"
+
+              run_server() {
+                TEST=$1; FLAGS=$2
+                echo ""
+                echo ">>> SERVER: $TEST"
+                printf "ready:%s\n%s\n" "$TEST" "$NET1_IP" > /tmp/srv/status.txt
+                $TEST $FLAGS || true
+                printf "done:%s\n%s\n" "$TEST" "$NET1_IP" > /tmp/srv/status.txt
+                sleep 2
+              }
+
+              while true; do
+                run_server ib_send_bw  "$BW_FLAGS"
+                run_server ib_write_bw "$BW_FLAGS"
+                run_server ib_read_bw  "$BW_FLAGS"
+                run_server ib_send_lat "$LAT_FLAGS"
+                echo "=== Cycle complete, restarting ==="
+                sleep 5
+              done
+
+          resources:
+            limits:
+              rdma/hca_shared_devices: "1"
+              memory: "512Mi"
+              cpu: "2"
+            requests:
+              rdma/hca_shared_devices: "1"
+              memory: "256Mi"
+              cpu: "1"
+          volumeMounts:
+            - name: dev-infiniband
+              mountPath: /dev/infiniband
+
+      volumes:
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband

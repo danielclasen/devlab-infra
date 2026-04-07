@@ -1,0 +1,125 @@
+---
+# RoCEv2 perftest client — pinned to n04 (same node as writer-media-function)
+# Polls server status endpoint, runs each perftest in lock-step, prints Gbps results.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rdma-perf-client
+  namespace: rdma-test
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        job-name: rdma-perf-client
+      annotations:
+        k8s.v1.cni.cncf.io/networks: network/rdma-roce
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: n04
+
+      containers:
+        - name: perftest-client
+          image: ubuntu:22.04
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -eu
+              echo "=== RoCEv2 Perftest Client ==="
+
+              echo "Installing perftest..."
+              apt-get update -qq
+              apt-get install -y -qq perftest iproute2 wget
+              echo "Installation complete."
+
+              NET1_IP=$(ip addr show net1 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+              echo "net1 IP: $NET1_IP"
+              [ -n "$NET1_IP" ] || { echo "ERROR: net1 not found"; exit 1; }
+
+              # Discover RoCEv2 GID index matching net1 IP
+              IP_HEX=$(printf "%02x%02x:%02x%02x" $(echo "$NET1_IP" | tr '.' ' '))
+              echo "Looking for GID containing $IP_HEX with type RoCE v2..."
+              GID_IDX=11
+              for i in $(seq 0 15); do
+                GID=$(cat "/sys/class/infiniband/mlx5_bond_0/ports/1/gids/$i" 2>/dev/null | tr -d '\n') || continue
+                TYPE=$(cat "/sys/class/infiniband/mlx5_bond_0/ports/1/gid_attrs/types/$i" 2>/dev/null | tr -d '\n') || continue
+                if echo "$GID" | grep -qi "$IP_HEX" && echo "$TYPE" | grep -qi "v2"; then
+                  GID_IDX=$i
+                  echo "Found: GID[$i] = $GID (type: $TYPE)"
+                  break
+                fi
+              done
+              echo "Using GID index: $GID_IDX"
+
+              SERVER_SVC="rdma-perf-server-svc"
+              SERVER_PORT=8080
+              TIMEOUT=300
+
+              # Wait for the server HTTP endpoint to become reachable
+              echo "Waiting for server at $SERVER_SVC:$SERVER_PORT ..."
+              until wget -qO- "http://$SERVER_SVC:$SERVER_PORT/status.txt" >/dev/null 2>&1; do
+                sleep 2
+              done
+              echo "Server reachable."
+
+              BW_FLAGS="-d mlx5_bond_0 -x $GID_IDX --report_gbits -s 65536 -D 10 -R"
+              LAT_FLAGS="-d mlx5_bond_0 -x $GID_IDX -s 2 -n 1000"
+
+              run_client() {
+                TEST=$1; FLAGS=$2
+                echo ""
+                echo ">>> CLIENT: $TEST — waiting for server ready signal..."
+                ELAPSED=0
+                SERVER_RDMA_IP=""
+                while true; do
+                  STATUS=$(wget -qO- "http://$SERVER_SVC:$SERVER_PORT/status.txt" 2>/dev/null | head -1 | tr -d '\n') || true
+                  if [ "$STATUS" = "ready:$TEST" ]; then
+                    SERVER_RDMA_IP=$(wget -qO- "http://$SERVER_SVC:$SERVER_PORT/status.txt" 2>/dev/null | sed -n '2p' | tr -d '\n') || true
+                    echo "Server ready. RDMA target IP: $SERVER_RDMA_IP"
+                    break
+                  fi
+                  ELAPSED=$((ELAPSED+1))
+                  if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+                    echo "TIMEOUT waiting for server to signal ready:$TEST — skipping"
+                    return 1
+                  fi
+                  sleep 1
+                done
+
+                echo "--- $TEST results ---"
+                $TEST $FLAGS "$SERVER_RDMA_IP"
+                echo "--- $TEST done ---"
+              }
+
+              run_client ib_send_bw  "$BW_FLAGS"
+              run_client ib_write_bw "$BW_FLAGS"
+              run_client ib_read_bw  "$BW_FLAGS"
+              run_client ib_send_lat "$LAT_FLAGS"
+
+              echo ""
+              echo "========================================="
+              echo "  ALL BENCHMARKS COMPLETE"
+              echo "========================================="
+
+          resources:
+            limits:
+              rdma/hca_shared_devices: "1"
+              memory: "512Mi"
+              cpu: "2"
+            requests:
+              rdma/hca_shared_devices: "1"
+              memory: "256Mi"
+              cpu: "1"
+          volumeMounts:
+            - name: dev-infiniband
+              mountPath: /dev/infiniband
+
+      volumes:
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
