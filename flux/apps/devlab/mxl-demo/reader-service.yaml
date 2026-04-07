@@ -1,0 +1,13 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reader-fabrics-svc
+  namespace: mxl-demo
+spec:
+  selector:
+    app: reader-media-function
+  ports:
+    - name: target-info
+      port: 8080
+      targetPort: 8080

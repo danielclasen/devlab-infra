@@ -1,0 +1,135 @@
+---
+# MXL Reader – RoCEv2 cross-node deployment
+#
+# Target-info discovery:
+#   1. reader-container runs mxl-fabrics-demo, prints "Target info: <base64>" to stdout
+#   2. Extracted and written to /target-info/target-info.txt (emptyDir)
+#   3. target-info-server sidecar (busybox httpd) serves it on port 8080
+#   4. Writer polls http://reader-fabrics-svc:8080/target-info.txt until available
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reader-media-function
+  namespace: mxl-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: reader-media-function
+  template:
+    metadata:
+      labels:
+        app: reader-media-function
+      annotations:
+        # Secondary NIC on VLAN 292 — unique IP allocated by whereabouts
+        k8s.v1.cni.cncf.io/networks: network/rdma-roce
+    spec:
+      # Reader and writer must land on different nodes for cross-node RDMA.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - writer-media-function
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: reader-container
+          image: oci.clsn.dev/mxl-reader:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              rm -rf /domain/*
+              rm -f /target-info/target-info.txt
+
+              FIFO=/tmp/fabrics-fifo
+              rm -f $FIFO && mkfifo $FIFO
+
+              /app/mxl-fabrics-demo -d /domain -f /app/v210_flow.json -p verbs > $FIFO 2>&1 &
+              FABRICS_PID=$!
+
+              {
+                while IFS= read -r line; do
+                  case "$line" in
+                    *"Target info:"*)
+                      printf '%s\n' "$line" > /tmp/fabrics-ti.txt
+                      break
+                      ;;
+                  esac
+                done
+                cat > /dev/null
+              } < $FIFO &
+
+              echo "Waiting for fabrics target to produce target-info..."
+              while [ ! -s /tmp/fabrics-ti.txt ] 2>/dev/null; do sleep 0.5; done
+
+              sed 's/.*Target info: //' /tmp/fabrics-ti.txt | tr -d ' \r\n' > /target-info/target-info.txt
+              echo "Target info published for discovery"
+
+              echo "Waiting for video flow in /domain..."
+              while [ -z "$(ls /domain/ 2>/dev/null | grep '.mxl-flow')" ]; do sleep 0.5; done
+
+              /app/mxl-gst-sink -d /domain -v 5fbec3b1-1b0f-417d-9059-8b94a47197ed > /dev/null 2>&1 &
+
+              wait $FABRICS_PID
+
+          resources:
+            limits:
+              rdma/hca_shared_devices: "1"
+              memory: "4Gi"
+              cpu: "4"
+            requests:
+              rdma/hca_shared_devices: "1"
+              memory: "1Gi"
+              cpu: "2"
+          tty: true
+          stdin: true
+          volumeMounts:
+            - name: domain-volume
+              mountPath: /domain
+            - name: target-info
+              mountPath: /target-info
+            - name: dev-infiniband
+              mountPath: /dev/infiniband
+
+        - name: target-info-server
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while [ ! -f /target-info/target-info.txt ]; do sleep 0.5; done
+              echo "Serving target-info on port 8080"
+              cd /target-info
+              httpd -f -p 8080
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+          volumeMounts:
+            - name: target-info
+              mountPath: /target-info
+              readOnly: true
+
+      volumes:
+        - name: domain-volume
+          emptyDir:
+            medium: Memory
+        - name: target-info
+          emptyDir: {}
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband

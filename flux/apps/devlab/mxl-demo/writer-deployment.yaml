@@ -1,0 +1,135 @@
+---
+# MXL Writer – RoCEv2 cross-node deployment
+#
+# target-info-fetcher sidecar polls reader-fabrics-svc:8080 and writes the
+# rdmacm endpoint address to a shared emptyDir. The writer watchdog loop
+# detects changes and (re)starts mxl-fabrics-demo with the new target-info,
+# so reader restarts are handled automatically without restarting the writer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: writer-media-function
+  namespace: mxl-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: writer-media-function
+  template:
+    metadata:
+      labels:
+        app: writer-media-function
+      annotations:
+        # Secondary NIC on VLAN 292 — unique IP allocated by whereabouts
+        k8s.v1.cni.cncf.io/networks: network/rdma-roce
+    spec:
+      # Writer and reader must land on different nodes for cross-node RDMA.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - reader-media-function
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: writer-container
+          image: oci.clsn.dev/mxl-writer:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: [IPC_LOCK]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              /app/mxl-gst-testsrc -d /domain -v /app/v210_flow.json -a /app/audio_flow.json &
+              WRITER_PID=$!
+
+              echo "Waiting for video flow to be created..."
+              while [ -z "$(ls /domain/ 2>/dev/null | grep '.mxl-flow')" ]; do sleep 0.5; done
+              echo "Video flow created"
+
+              (
+                FABRICS_PID=""
+                LAST_TARGET=""
+                while true; do
+                  if [ -s /target-info/target-info.txt ]; then
+                    TARGET_INFO=$(cat /target-info/target-info.txt)
+                    if [ "$TARGET_INFO" != "$LAST_TARGET" ]; then
+                      if [ -n "$FABRICS_PID" ] && kill -0 $FABRICS_PID 2>/dev/null; then
+                        echo "target-info changed, restarting fabrics initiator..."
+                        kill $FABRICS_PID
+                        wait $FABRICS_PID 2>/dev/null
+                      else
+                        echo "Starting fabrics initiator..."
+                      fi
+                      /app/mxl-fabrics-demo -d /domain -f 5fbec3b1-1b0f-417d-9059-8b94a47197ed -i -p verbs --target-info "$TARGET_INFO" &
+                      FABRICS_PID=$!
+                      LAST_TARGET="$TARGET_INFO"
+                    fi
+                  fi
+                  sleep 2
+                done
+              ) &
+
+              wait $WRITER_PID
+
+          resources:
+            limits:
+              rdma/hca_shared_devices: "1"
+              memory: "4Gi"
+              cpu: "4"
+            requests:
+              rdma/hca_shared_devices: "1"
+              memory: "1Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: domain-volume
+              mountPath: /domain
+            - name: target-info
+              mountPath: /target-info
+              readOnly: true
+            - name: dev-infiniband
+              mountPath: /dev/infiniband
+
+        - name: target-info-fetcher
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Polling reader-fabrics-svc for target-info..."
+              CURRENT=""
+              while true; do
+                RESULT=$(wget -qO- http://reader-fabrics-svc:8080/target-info.txt 2>/dev/null | tr -d ' \r\n' || true)
+                if [ -n "$RESULT" ] && [ "$RESULT" != "$CURRENT" ]; then
+                  printf '%s' "$RESULT" > /target-info/target-info.txt
+                  echo "target-info updated"
+                  CURRENT="$RESULT"
+                fi
+                sleep 2
+              done
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+          volumeMounts:
+            - name: target-info
+              mountPath: /target-info
+
+      volumes:
+        - name: domain-volume
+          emptyDir:
+            medium: Memory
+        - name: target-info
+          emptyDir: {}
+        - name: dev-infiniband
+          hostPath:
+            path: /dev/infiniband
