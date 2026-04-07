@@ -27,6 +27,7 @@ metadata:
 spec:
   dependsOn:
     - name: infra-controllers
+    - name: multus
   interval: 1h
   retryInterval: 2m
   timeout: 5m

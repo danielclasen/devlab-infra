@@ -3,6 +3,5 @@ kind: Kustomization
 resources:
   - cert-manager.yaml
   - metrics-server.yaml
-  - multus.yaml
   - rdma-device-plugin.yaml
   - whereabouts.yaml

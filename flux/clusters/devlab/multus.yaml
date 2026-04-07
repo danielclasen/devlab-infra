@@ -1,0 +1,60 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: multus-cni-upstream
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/k8snetworkplumbingwg/multus-cni
+  ref:
+    tag: v4.2.4
+  ignore: |
+    /*
+    !/deployments/
+    /deployments/*
+    !/deployments/multus-daemonset-thick.yml
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: multus
+  namespace: flux-system
+spec:
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: multus-cni-upstream
+  path: ./deployments
+  prune: true
+  patches:
+    - target:
+        kind: DaemonSet
+        name: kube-multus-ds
+      patch: |
+        - op: replace
+          path: /spec/template/spec/containers/0/image
+          value: ghcr.io/k8snetworkplumbingwg/multus-cni:v4.2.4-thick
+        - op: replace
+          path: /spec/template/spec/initContainers/0/image
+          value: ghcr.io/k8snetworkplumbingwg/multus-cni:v4.2.4-thick
+        - op: replace
+          path: /spec/template/spec/containers/0/resources/requests/cpu
+          value: "200m"
+        - op: replace
+          path: /spec/template/spec/containers/0/resources/requests/memory
+          value: "100Mi"
+        - op: replace
+          path: /spec/template/spec/containers/0/resources/limits/cpu
+          value: "300m"
+        - op: replace
+          path: /spec/template/spec/containers/0/resources/limits/memory
+          value: "150Mi"
+        - op: replace
+          path: /spec/template/spec/containers/0/volumeMounts/6/mountPath
+          value: /var/run/netns
+        - op: replace
+          path: /spec/template/spec/volumes/8/hostPath/path
+          value: /var/run/netns/
