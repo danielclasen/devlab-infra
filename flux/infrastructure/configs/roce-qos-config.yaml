@@ -82,7 +82,7 @@ spec:
                 #   prio 6         → TC6 (CNP, strict priority — drains first)
                 dcb ets set dev $dev \
                   tc-tsa 0:ets 1:ets 2:ets 3:ets 4:ets 5:ets 6:strict 7:ets \
-                  tc-bw 0:50 3:50 \
+                  tc-bw 0:50 1:0 2:0 3:50 4:0 5:0 6:0 7:0 \
                   prio-tc 0:0 1:0 2:0 3:3 4:0 5:0 6:6 7:0 \
                   && echo "    ETS configured" \
                   || echo "    ETS set failed (port may be down)"
