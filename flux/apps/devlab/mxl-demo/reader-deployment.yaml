@@ -66,7 +66,7 @@ spec:
                       ;;
                   esac
                 done
-                cat > /dev/null
+                cat
               } < $FIFO &
 
               echo "Waiting for fabrics target to produce target-info..."
@@ -78,7 +78,7 @@ spec:
               echo "Waiting for video flow in /domain..."
               while [ -z "$(ls /domain/ 2>/dev/null | grep '.mxl-flow')" ]; do sleep 0.5; done
 
-              /app/mxl-gst-sink -d /domain -v 5fbec3b1-1b0f-417d-9059-8b94a47197ed > /dev/null 2>&1 &
+              /app/mxl-gst-sink -d /domain -v 5fbec3b1-1b0f-417d-9059-8b94a47197ed &
 
               wait $FABRICS_PID
 
