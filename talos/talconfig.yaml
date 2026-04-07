@@ -51,12 +51,10 @@ nodes:
               - "10.200.99.11/24"
       - interface: bond1
         bond: &bond1
-          mode: 802.3ad
-          lacpRate: fast
+          mode: active-backup
           miimon: 100
           updelay: 200
           downdelay: 200
-          xmitHashPolicy: layer3+4
           interfaces:
             - ens2f0np0
             - ens2f1np1
