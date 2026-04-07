@@ -1,61 +1,105 @@
 ---
+# NIC-side QoS for lossless RoCEv2 on Mellanox CX4 Lx (mlx5_bond_0 / 802.3ad LAG)
+#
+# NOTE: RDMA WRITE operations are submitted directly to NIC hardware via the verbs
+# API and bypass the Linux TC subsystem entirely. tc/pedit rules on bond1.292 do NOT
+# affect RDMA-generated packets. NIC QoS must be configured at the DCB layer via the
+# dcb tool and VLAN egress-qos-map.
+#
+# What this DaemonSet does:
+#   1. PFC (IEEE 802.1Qbb): enables PFC reception on priority 3 for both NIC ports.
+#      When the switch sends a PFC PAUSE frame for priority 3, the NIC pauses all
+#      traffic tagged with 802.1Q PCP=3, providing lossless behaviour for RoCEv2.
+#   2. ETS: maps priority 3 → TC3 (ETS, equal share with TC0), priority 6 → TC6
+#      (strict priority for CNP), all others → TC0 (best-effort).
+#   3. VLAN egress-qos-map: maps Linux socket priority 3 → 802.1Q PCP 3 on both
+#      bond1.291 and bond1.292, so kernel-path storage and rdmacm connection setup
+#      packets (SYN, CM REQ etc.) are tagged with PCP=3 and land in the right
+#      switch traffic class.
+#
+# DSCP marking of RDMA QP traffic:
+#   Applications using libfabric (mxl-fabrics) or rdmacm should call
+#   rdma_set_option(id, RDMA_OPTION_ID_TOS, &tos, sizeof(tos)) with tos=0x68
+#   (DSCP 26 / AF31 << 2) before rdma_connect(). The mlx5 driver copies this
+#   TOS value into the IP header of RDMA packets. The switch reads DSCP 26 and
+#   maps it to TC3 via its DSCP→profile map (trust-l3=keep).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: roce-dscp-config
+  name: roce-nic-qos
   namespace: kube-system
   labels:
-    app: roce-dscp-config
+    app: roce-nic-qos
 spec:
   selector:
     matchLabels:
-      app: roce-dscp-config
+      app: roce-nic-qos
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        app: roce-dscp-config
+        app: roce-nic-qos
     spec:
       hostNetwork: true
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
       initContainers:
-        - name: configure-roce-dscp
-          image: ghcr.io/nicolaka/netshoot:latest
+        - name: configure-nic-qos
+          image: ubuntu:22.04
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true
           command: ["/bin/bash", "-c"]
           args:
             - |
-              set -e
+              set -euo pipefail
 
-              IFACE="bond1.292"
+              # Install dcb (ships in iproute2 5.15 on Ubuntu 22.04)
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq && apt-get install -y -qq iproute2 2>/dev/null
 
-              until ip link show "${IFACE}" >/dev/null 2>&1; do
-                echo "Waiting for ${IFACE}..."
-                sleep 2
+              echo "=== CX4 Lx NIC QoS — PFC + ETS configuration ==="
+
+              for dev in ens2f0np0 ens2f1np1; do
+                if [ ! -e /sys/class/net/$dev ]; then
+                  echo "  $dev: not found, skipping"
+                  continue
+                fi
+                state=$(cat /sys/class/net/$dev/operstate 2>/dev/null || echo unknown)
+                echo "  $dev (state=$state)"
+
+                # PFC: enable receive on priority 3 only (RoCEv2 / DSCP 26 / AF31)
+                # NIC will pause outgoing priority-3 traffic on receipt of PFC PAUSE
+                dcb pfc set dev $dev prio-pfc 3:on \
+                  && echo "    PFC prio-3 enabled" \
+                  || echo "    PFC set failed (port may be down)"
+
+                # ETS: prio→TC mapping and bandwidth allocation
+                #   prio 0-2,4,5,7 → TC0 (best-effort, 50% ETS)
+                #   prio 3         → TC3 (RoCEv2, 50% ETS, lossless via PFC)
+                #   prio 6         → TC6 (CNP, strict priority — drains first)
+                dcb ets set dev $dev \
+                  tc-tsa 0:ets 1:ets 2:ets 3:ets 4:ets 5:ets 6:strict 7:ets \
+                  tc-bw 0:50 3:50 \
+                  prio-tc 0:0 1:0 2:0 3:3 4:0 5:0 6:6 7:0 \
+                  && echo "    ETS configured" \
+                  || echo "    ETS set failed (port may be down)"
               done
 
-              # Idempotent: remove existing root qdisc before re-applying
-              tc qdisc del dev "${IFACE}" root 2>/dev/null || true
+              # VLAN egress-qos-map: Linux socket priority 3 → 802.1Q PCP 3
+              # Ensures kernel-path packets (rdmacm CM messages, storage) get PCP=3
+              # so the switch queues them in TC3 and PFC operates correctly.
+              for vlan in bond1.291 bond1.292; do
+                if ip link show $vlan >/dev/null 2>&1; then
+                  ip link set $vlan type vlan egress-qos-map 3:3 \
+                    && echo "  $vlan: egress-qos-map 3->PCP3 set" \
+                    || echo "  $vlan: egress-qos-map failed"
+                fi
+              done
 
-              # Add prio qdisc as root (all traffic defaults to band 0)
-              tc qdisc add dev "${IFACE}" root handle 1: prio \
-                priomap 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-
-              # Mark RoCEv2 (UDP dst 4791) with DSCP 26 (AF31)
-              # TOS byte: DSCP 26 = 0x68 (26<<2); retain 0x03 preserves ECN bits
-              tc filter add dev "${IFACE}" parent 1: protocol ip prio 10 u32 \
-                match ip protocol 17 0xff \
-                match ip dport 4791 0xffff \
-                action pedit ex munge ip tos set 0x68 retain 0x03 \
-                action csum ip
-
-              echo "=== RoCEv2 DSCP configuration applied on ${IFACE} ==="
-              tc filter show dev "${IFACE}" parent 1:
+              echo "=== NIC QoS configuration complete ==="
           volumeMounts:
             - name: sys
               mountPath: /sys

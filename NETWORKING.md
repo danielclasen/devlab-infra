@@ -13,8 +13,10 @@ Complete reference for the devlab-rack01 network stack: physical cabling, switch
 5. [Talos Node Configuration](#talos-node-configuration)
 6. [Kernel Modules & Sysctls](#kernel-modules--sysctls)
 7. [Kubernetes RDMA Setup](#kubernetes-rdma-setup)
-8. [Rebuild Checklist](#rebuild-checklist)
-9. [Pending / Follow-up](#pending--follow-up)
+8. [NIC-side QoS (PFC + ETS)](#nic-side-qos-pfc--ets)
+9. [dmf-mxl Workload Requirements](#dmf-mxl-workload-requirements)
+10. [Rebuild Checklist](#rebuild-checklist)
+11. [Pending / Follow-up](#pending--follow-up)
 
 ---
 
@@ -215,6 +217,8 @@ set name="MikroTik CRS504-4XQ-IN"
 
 ### RoCEv2 QoS Design
 
+> **Verified live on RouterOS 7.22.1** — all 8 node-facing ports confirmed via `/interface ethernet switch qos port print terse`.
+
 | Traffic class | Profile | DSCP | Queue | Scheduler | Notes |
 |--------------|---------|------|-------|-----------|-------|
 | Best-effort | default | 0 | TC1 | ETS weight=1 | Storage (DRBD/Linstor), general traffic |
@@ -222,10 +226,11 @@ set name="MikroTik CRS504-4XQ-IN"
 | CNP | cnp | 48 | TC6 | Strict priority | Congestion Notification Packets |
 
 - **PFC** (IEEE 802.1Qbb) enabled on TC3 with `rx=yes tx=yes` — lossless for RDMA traffic
-- **ECN** enabled on TC3 queue — switches marks CE bits instead of dropping at threshold
+- **ECN** enabled on TC3 queue — switch marks CE bits instead of dropping at threshold
 - **ETS** — TC1 and TC3 share bandwidth equally when both are active; TC6 always drains first
 - **LLDP DCBX** enabled — switch advertises QoS capabilities to Mellanox NICs
 - `trust-l3=keep` — switch honors host-set DSCP values without overwriting them
+- `egress-rate-queue3=25Gbps` — per-port TC3 egress rate cap matches link speed
 
 ---
 
@@ -411,13 +416,29 @@ All 4 nodes use the same schematic including:
 
 ## Kubernetes RDMA Setup
 
+### mlx5 RoCE LAG
+
+With 802.3ad bonding active on `bond1` (both `ens2f0np0` + `ens2f1np1` as slaves), the mlx5 kernel driver automatically detects the bond and creates a single hardware LAG RDMA device: **`mlx5_bond_0`**. This has been confirmed ACTIVE on all 4 nodes.
+
+- All RDMA traffic is load-balanced across both 25G ports in hardware (50G aggregate per node)
+- `mlx5_bond_0` exposes a single `uverbs0` device to userspace via `/dev/infiniband/uverbs0`
+- n02 has a broken `ens2f1np1` port — mlx5 LAG degrades gracefully to 1 active port on n02 (25G)
+
+**Verification:**
+```bash
+talosctl -n 10.200.90.111 ls /sys/class/infiniband/
+# Expected: mlx5_bond_0
+talosctl -n 10.200.90.111 read /sys/class/infiniband/mlx5_bond_0/ports/1/state
+# Expected: 4: ACTIVE
+```
+
 ### RDMA Shared Device Plugin
 
 Deployed via Flux at `flux/infrastructure/controllers/rdma-device-plugin.yaml`.
 
 **Device selector:** `ifNames: ["ens2f0np0"]`
 
-Using the primary bond member interface (not the bond interface itself, and not vendor/deviceID which would match both physical ports and fail on the secondary bonded port due to missing sysfs entries).
+Even in LAG mode, `mlx5_bond_0`'s sysfs path (`/sys/class/infiniband/mlx5_bond_0/device/net/`) resolves to `ens2f0np0` (the primary bond slave). The device plugin therefore finds `mlx5_bond_0` via the `ens2f0np0` selector. Using `bond1` (virtual device, no PCIe address) would NOT work.
 
 Exposes: `rdma/hca_shared_devices` — 1000 shared resource instances per node.
 
@@ -438,11 +459,14 @@ type: macvlan
 master: bond1.292        # VLAN 292 sub-interface of the CX4 Lx bond
 mode: bridge
 mtu: 9000
-ipam: host-local
-  subnet: 10.200.92.0/24
-  rangeStart: 10.200.92.128
-  rangeEnd: 10.200.92.200
+ipam: whereabouts        # cluster-wide IP tracking (not host-local)
+  range: 10.200.92.128/26
+  exclude: [10.200.92.191/32]
 ```
+
+`whereabouts` IPAM (deployed at `flux/infrastructure/controllers/whereabouts.yaml`) tracks allocated IPs cluster-wide via Kubernetes CRDs, preventing IP conflicts when pods on different nodes draw from the same range. `host-local` must NOT be used here — it allocates per-node from a shared range, causing duplicate IPs across nodes which breaks rdmacm peer resolution.
+
+Pod secondary interface IPs are allocated from `10.200.92.128–10.200.92.190` (62 addresses). These are distinct from static node IPs (`10.200.92.11–14`).
 
 **Usage in a pod:**
 ```yaml
@@ -454,6 +478,147 @@ spec:
     - resources:
         limits:
           rdma/hca_shared_devices: "1"
+```
+
+---
+
+## NIC-side QoS (PFC + ETS)
+
+Deployed via Flux at `flux/infrastructure/configs/roce-qos-config.yaml` as DaemonSet `roce-nic-qos`.
+
+> **Why not `tc` / `tc pedit`?** RDMA WRITE operations are submitted directly to NIC hardware via the verbs API (DMA from host memory to wire). They bypass the Linux Traffic Control (TC) subsystem entirely. A `tc pedit` rule on `bond1.292` only affects kernel-path packets (regular TCP/UDP) — it never sees NIC-generated RDMA packets.
+
+### What the DaemonSet configures
+
+| Step | Tool | Effect |
+|------|------|--------|
+| PFC reception | `dcb pfc set dev ens2f0np0 prio-pfc 3:on` | NIC pauses outgoing priority-3 frames when switch sends PFC PAUSE on priority 3 |
+| ETS scheduling | `dcb ets set dev ...` | Maps prio 3→TC3 (50% ETS), prio 6→TC6 (strict), others→TC0 (50% ETS) |
+| VLAN PCP | `ip link set bond1.292 type vlan egress-qos-map 3:3` | Kernel-path packets with socket priority 3 get 802.1Q PCP=3 (rdmacm CM messages etc.) |
+
+### DSCP marking for RDMA QPs
+
+The DSCP value in outgoing RDMA packet IP headers is set by the **application**, not the host. Applications using `libfabric` (dmf-mxl) or raw `rdmacm` must set the TOS before connecting:
+
+```c
+uint8_t tos = 0x68;  /* DSCP 26 = AF31; 26 << 2 = 0x68 */
+rdma_set_option(cm_id, RDMA_OPTION_ID_TOS, &tos, sizeof(tos));
+/* then: rdma_resolve_route() → rdma_connect() */
+```
+
+The mlx5 driver copies this TOS into the IP header of all RDMA packets on that QP. The switch reads `DSCP 26` and maps it to `TC3` via its `qos map ip` profile.
+
+### Verification
+
+```bash
+# Check DaemonSet is running on all nodes
+kubectl get ds roce-nic-qos -n kube-system
+
+# Check PFC state on a node
+# Run a debug pod or use kubectl exec into a privileged pod:
+dcb pfc show dev ens2f0np0
+# Expected: prio-pfc 3:on
+
+dcb ets show dev ens2f0np0
+# Expected: prio-tc showing 3:3 and 6:6
+```
+
+### End-to-End QoS Flow
+
+```
+Host (n01)                                Switch (sw01)
+──────────────────────────────────────    ──────────────────────────────────────
+App / libfabric                           trust-l3=keep
+  │ rdma_set_option TOS=0x68               │ reads DSCP 26 from IP header
+  │                                        │
+RDMA QP (mlx5_bond_0)                     │ DSCP 26 → profile roce → TC3
+  │ NIC DMA → wire (DSCP 26 in IP hdr)     │
+  │                                        ├── TC3: ETS 50%, lossless (PFC)
+  └─ 25G/50G LAG ─────────────────────────     ECN marking, shared pool
+                                           │
+PFC PAUSE ←──── switch TC3 congestion      ├── TC1/TC0: ETS 50% (storage,
+  │                                        │   general traffic)
+  ↓                                        │
+dcb pfc prio 3 active on NIC               └── TC6: strict priority (CNP)
+  NIC pauses prio-3 RDMA frames                PFC rx+tx enabled (TC3)
+  until PAUSE expires                          LLDP DCBX advertising to NICs
+```
+
+---
+
+## dmf-mxl Workload Requirements
+
+[dmf-mxl](https://github.com/dmf-mxl/mxl) is a zero-copy shared-memory media exchange library. Its multi-node transport (PR #266, `mxl-fabrics`) uses **libfabric OFI** with `MXL_FABRICS_PROVIDER_VERBS` — libibverbs + librdmacm — to perform RDMA WRITE operations between nodes.
+
+### What pods need
+
+| Requirement | Kubernetes resource | Notes |
+|---|---|---|
+| RDMA device | `rdma/hca_shared_devices: "1"` | Exposes `mlx5_bond_0` via `/dev/infiniband/` |
+| VLAN 292 IP | `k8s.v1.cni.cncf.io/networks: network/rdma-roce` annotation | macvlan on bond1.292, unique IP per pod via whereabouts |
+| Shared memory (local IPC) | `emptyDir{medium: Memory}` at `/dev/shm/mxl` | tmpfs for MXL domain ring-buffer files |
+| Cross-pod sharing (same node) | `hostPath: /dev/shm/mxl` instead | Allows two pods on same node to share flows directly |
+| Memory lock | `securityContext.capabilities.add: [IPC_LOCK]` | Required for RDMA memory region registration |
+| Libraries in image | `libibverbs`, `librdmacm`, `libfabric` (OFI verbs provider) | Build mxl with `-DMXL_ENABLE_FABRICS_OFI=ON` |
+
+### Reference pod spec
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mxl-worker
+  namespace: default
+  annotations:
+    # Secondary NIC on VLAN 292 — unique IP allocated by whereabouts
+    k8s.v1.cni.cncf.io/networks: network/rdma-roce
+spec:
+  containers:
+    - name: mxl-worker
+      image: <your-mxl-image>  # must include libibverbs, librdmacm, libfabric
+      securityContext:
+        capabilities:
+          add: [IPC_LOCK]
+      resources:
+        limits:
+          rdma/hca_shared_devices: "1"
+          hugepages-2Mi: "1Gi"      # optional: if using huge-page backed buffers
+        requests:
+          memory: "2Gi"
+      volumeMounts:
+        # MXL domain: tmpfs for local-only use
+        - name: mxl-domain
+          mountPath: /dev/shm/mxl
+        # Or for cross-pod sharing on same node, use hostPath instead:
+        # - name: mxl-domain
+        #   mountPath: /dev/shm/mxl
+        - name: dev-infiniband
+          mountPath: /dev/infiniband
+  volumes:
+    # Local-only: each pod gets its own tmpfs MXL domain
+    - name: mxl-domain
+      emptyDir:
+        medium: Memory
+        sizeLimit: "4Gi"   # size to hold ring buffers; 1080p 10-bit v210 ≈ 6MB/frame
+    # For cross-pod same-node sharing, replace with:
+    # - name: mxl-domain
+    #   hostPath:
+    #     path: /dev/shm/mxl
+    #     type: DirectoryOrCreate
+    - name: dev-infiniband
+      hostPath:
+        path: /dev/infiniband
+```
+
+### DSCP/TOS in libfabric
+
+The libfabric verbs provider passes rdmacm hints to the underlying connection. To set DSCP 26 (AF31) on RDMA QPs, set the `FI_OPT_CQ_DATA_SIZE` hint or use the rdmacm TOS option before connect. In mxl-fabrics the `endpointAddress.node` should be the pod's VLAN 292 IP (from the `rdma-roce` secondary interface, e.g. `10.200.92.130`).
+
+### MXL domain URI example
+
+```
+mxl://10.200.92.130:5000/dev/shm/mxl?id=<flow-uuid>
+        ↑ pod's VLAN 292 IP  ↑ libfabric listen port  ↑ MXL domain path inside pod
 ```
 
 ---
@@ -525,69 +690,21 @@ kubectl logs -n kube-system -l name=rdma-shared-dp-ds --tail=5
 # Expected: exposing "1000" devices on each pod
 
 kubectl get nodes -o custom-columns='NODE:.metadata.name,RDMA:.status.allocatable.rdma/hca_shared_devices'
-```
+# Expected: 1k on all 4 nodes
 
----
+# Verify whereabouts is running
+kubectl get ds whereabouts -n kube-system
 
-## Host-side DSCP Marking
+# Verify NIC QoS DaemonSet
+kubectl get ds roce-nic-qos -n kube-system
+kubectl logs -n kube-system -l app=roce-nic-qos -c configure-nic-qos --previous
+# Expected: PFC prio-3 enabled, ETS configured, egress-qos-map set
 
-RoCEv2 traffic must be marked with DSCP 26 at the host so the switch's DSCP→TC mapping takes effect. This is implemented as a privileged DaemonSet (`roce-dscp-config`) deployed via Flux from `flux/infrastructure/configs/roce-qos-config.yaml`.
-
-### How It Works
-
-The DaemonSet runs a privileged `initContainer` on every node that installs a `tc` egress filter on `bond1.292`:
-
-```
-UDP dst-port 4791 (RoCEv2) → pedit TOS byte → DSCP 26 (0x68) + preserve ECN bits
-                            → csum recalculate IP header
-```
-
-The filter is idempotent: it removes any existing root qdisc on `bond1.292` before re-applying. It re-runs on every node reboot (DaemonSet restart).
-
-### Traffic Markings
-
-| Traffic | DSCP | TOS byte | Switch TC | Notes |
-|---------|------|----------|-----------|-------|
-| RoCEv2 data (UDP 4791) | 26 (AF31) | 0x68 | TC3 (ETS, lossless pool, ECN) | Set by `tc` filter |
-| All other traffic | 0 | 0x00 | TC1 (ETS, best-effort) | Default |
-| CNP | 48 (CS6) | 0xC0 | TC6 (strict priority) | Generated by NIC/driver; not TC-marked (cannot distinguish from data at L4) |
-
-> **CNP note:** Congestion Notification Packets share UDP port 4791 with data packets and cannot be distinguished by simple L4 `tc` filters. The mlx5 upstream driver does not expose a DSCP override for NIC-generated CNPs without Mellanox OFED. CNPs will arrive at the switch marked DSCP 0 (TC1), not DSCP 48 (TC6). For lab purposes this is acceptable — CNPs are low-volume control messages and TC1 is still served by the ETS scheduler.
-
-### Manifest
-
-Deployed at `flux/infrastructure/configs/roce-qos-config.yaml`, reconciled via the `infra-configs` Flux Kustomization.
-
-### Verification
-
-```bash
-# Check DaemonSet is running on all nodes
-kubectl get ds roce-dscp-config -n kube-system
-
-# Confirm tc filter is active (shows pedit + csum actions)
-kubectl logs -n kube-system -l app=roce-dscp-config --prefix -c configure-roce-dscp
-
-# Live filter check on a node
-talosctl read /proc/net/psched -n 10.200.90.111  # verify tc subsystem active
-```
-
-### End-to-End QoS Flow
-
-```
-Host (n01)                          Switch (sw01)
-─────────────────────────────────   ──────────────────────────────────────
-RoCEv2 app                          trust-l3=keep
-  │ UDP dst=4791                       │ reads DSCP from IP header
-  │                                    │
-bond1.292 (tc egress filter)           │ DSCP 26 → profile roce → TC3
-  │ DSCP 0 → DSCP 26 (pedit)           │
-  │                                    ├── TC3: ETS weight=1, lossless
-  └─ 25G LACP ──────────────────────── │    shared pool, ECN marking
-                                       │
-                                       ├── TC1: ETS weight=1 (storage,
-                                       │    general traffic)
-                                       │
-                                       └── TC6: strict priority (CNP)
-                                            PFC enabled (rx+tx) on TC3
-                                            LLDP DCBX advertising to NICs
+# Verify mlx5 LAG is active on all nodes
+for n in 111 112 113 114; do
+  echo -n "n0${n: -1}: "
+  talosctl -n 10.200.90.$n -e 10.200.90.$n \
+    read /sys/class/infiniband/mlx5_bond_0/ports/1/state 2>&1
+done
+# Expected: 4: ACTIVE on all nodes
 ```

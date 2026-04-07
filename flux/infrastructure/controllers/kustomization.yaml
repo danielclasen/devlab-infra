@@ -5,3 +5,4 @@ resources:
   - metrics-server.yaml
   - multus.yaml
   - rdma-device-plugin.yaml
+  - whereabouts.yaml

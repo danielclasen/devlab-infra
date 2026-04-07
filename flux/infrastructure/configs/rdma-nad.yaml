@@ -19,10 +19,8 @@ spec:
       "mode": "bridge",
       "mtu": 9000,
       "ipam": {
-        "type": "host-local",
-        "subnet": "10.200.92.0/24",
-        "rangeStart": "10.200.92.128",
-        "rangeEnd": "10.200.92.200",
-        "gateway": "10.200.92.1"
+        "type": "whereabouts",
+        "range": "10.200.92.128/26",
+        "exclude": ["10.200.92.191/32"]
       }
     }
