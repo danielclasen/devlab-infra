@@ -44,7 +44,7 @@ spec:
           imagePullPolicy: Always
           securityContext:
             capabilities:
-              add: [IPC_LOCK]
+              add: [IPC_LOCK, SYS_RESOURCE]
           command: ["/bin/sh", "-c"]
           args:
             - |
