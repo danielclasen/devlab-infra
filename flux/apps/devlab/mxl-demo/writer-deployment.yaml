@@ -47,7 +47,7 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              /app/mxl-gst-testsrc -d /domain -v /app/v210_flow.json -a /app/audio_flow.json &
+              /usr/bin/mxl-gst-testsrc -d /domain -v /home/mxl/v210_flow.json -a /home/mxl/audio_flow.json &
               WRITER_PID=$!
 
               echo "Waiting for video flow to be created..."
@@ -68,7 +68,7 @@ spec:
                       else
                         echo "Starting fabrics initiator..."
                       fi
-                      /app/mxl-fabrics-demo -d /domain -f 5fbec3b1-1b0f-417d-9059-8b94a47197ed -i -p verbs --target-info "$TARGET_INFO" &
+                      /usr/bin/mxl-fabrics-demo -d /domain -f 5fbec3b1-1b0f-417d-9059-8b94a47197ed -i -p verbs --target-info "$TARGET_INFO" &
                       FABRICS_PID=$!
                       LAST_TARGET="$TARGET_INFO"
                     fi

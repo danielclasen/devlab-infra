@@ -54,7 +54,7 @@ spec:
               FIFO=/tmp/fabrics-fifo
               rm -f $FIFO && mkfifo $FIFO
 
-              /app/mxl-fabrics-demo -d /domain -f /app/v210_flow.json -p verbs > $FIFO 2>&1 &
+              /usr/bin/mxl-fabrics-demo -d /domain -f /usr/share/mxl/data/v210_flow.json -p verbs > $FIFO 2>&1 &
               FABRICS_PID=$!
 
               {
@@ -78,7 +78,7 @@ spec:
               echo "Waiting for video flow in /domain..."
               while [ -z "$(ls /domain/ 2>/dev/null | grep '.mxl-flow')" ]; do sleep 0.5; done
 
-              /app/mxl-gst-sink -d /domain -v 5fbec3b1-1b0f-417d-9059-8b94a47197ed &
+              /usr/bin/mxl-gst-sink -d /domain -v 5fbec3b1-1b0f-417d-9059-8b94a47197ed &
 
               wait $FABRICS_PID
 
