@@ -40,7 +40,7 @@ spec:
       containers:
         - name: writer-container
           image: oci.clsn.dev/mxl-writer:cx4-rdma
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             capabilities:
               add: [IPC_LOCK]

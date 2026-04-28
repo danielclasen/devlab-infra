@@ -41,7 +41,7 @@ spec:
       containers:
         - name: reader-container
           image: oci.clsn.dev/mxl-reader:cx4-rdma
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           securityContext:
             capabilities:
               add: [IPC_LOCK]
