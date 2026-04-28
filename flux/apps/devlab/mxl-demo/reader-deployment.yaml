@@ -43,6 +43,8 @@ spec:
           image: oci.clsn.dev/mxl-reader:cx4-rdma
           imagePullPolicy: Always
           securityContext:
+            runAsUser: 0
+            runAsGroup: 0
             capabilities:
               add: [IPC_LOCK, SYS_RESOURCE]
           command: ["/bin/sh", "-c"]
