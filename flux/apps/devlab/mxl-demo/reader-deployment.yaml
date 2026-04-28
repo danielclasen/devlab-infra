@@ -51,7 +51,7 @@ spec:
               rm -rf /domain/*
               rm -f /target-info/target-info.txt
 
-              NODE_IP=$(ip addr show net1 | awk '/inet /{print $2}' | cut -d/ -f1)
+              NODE_IP=$(awk '/32 host/{f=1;next} f{print $1;f=0}' /proc/net/fib_trie | grep -v '^127\.' | grep -v '^10\.244\.' | sort -u | head -1)
               echo "RDMA node IP: $NODE_IP"
 
               FIFO=/tmp/fabrics-fifo
