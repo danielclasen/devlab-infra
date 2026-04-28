@@ -26,8 +26,15 @@ spec:
         # Secondary NIC on VLAN 292 — unique IP allocated by whereabouts
         k8s.v1.cni.cncf.io/networks: network/rdma-roce
     spec:
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        nameservers:
+          - 10.96.0.10
+        searches:
+          - mxl-demo.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
       # Reader and writer must land on different nodes for cross-node RDMA.
-      hostNetwork: true
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

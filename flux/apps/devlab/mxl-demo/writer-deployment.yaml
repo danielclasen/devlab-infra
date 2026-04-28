@@ -25,6 +25,14 @@ spec:
         # Secondary NIC on VLAN 292 — unique IP allocated by whereabouts
         k8s.v1.cni.cncf.io/networks: network/rdma-roce
     spec:
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        nameservers:
+          - 10.96.0.10
+        searches:
+          - mxl-demo.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
       # Writer and reader must land on different nodes for cross-node RDMA.
       affinity:
         podAntiAffinity:
@@ -117,7 +125,7 @@ spec:
               echo "Polling reader-fabrics-svc for target-info..."
               CURRENT=""
               while true; do
-                RESULT=$(wget -qO- http://10.106.98.172:8080/target-info.txt 2>/dev/null | tr -d ' \r\n' || true)
+                RESULT=$(wget -qO- http://reader-fabrics-svc.mxl-demo.svc.cluster.local:8080/target-info.txt 2>/dev/null | tr -d ' \r\n' || true)
                 if [ -n "$RESULT" ] && [ "$RESULT" != "$CURRENT" ]; then
                   printf '%s' "$RESULT" > /target-info/target-info.txt
                   echo "target-info updated"
