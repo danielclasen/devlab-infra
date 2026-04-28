@@ -54,28 +54,22 @@ spec:
               NODE_IP=$(awk '/\|--/{ip=$2} /\/32 host LOCAL/{print ip}' /proc/net/fib_trie | grep -v '^127\.' | grep -v '^10\.244\.' | sort -u | head -1)
               echo "RDMA node IP: $NODE_IP"
 
-              FIFO=/tmp/fabrics-fifo
-              rm -f $FIFO && mkfifo $FIFO
-
-              /usr/bin/mxl-fabrics-demo -d /domain -f /usr/share/mxl/data/v210_flow.json -p verbs --node "$NODE_IP" > $FIFO 2>&1 &
+              FABRICS_LOG=/tmp/fabrics-demo.log
+              /usr/bin/mxl-fabrics-demo -d /domain -f /usr/share/mxl/data/v210_flow.json -p verbs --node "$NODE_IP" > "$FABRICS_LOG" 2>&1 &
               FABRICS_PID=$!
 
-              {
-                while IFS= read -r line; do
-                  case "$line" in
-                    *"Target info:"*)
-                      printf '%s\n' "$line" > /tmp/fabrics-ti.txt
-                      break
-                      ;;
-                  esac
-                done
-                cat
-              } < $FIFO &
-
               echo "Waiting for fabrics target to produce target-info..."
-              while [ ! -s /tmp/fabrics-ti.txt ] 2>/dev/null; do sleep 0.5; done
+              while ! grep -q "Target info:" "$FABRICS_LOG" 2>/dev/null; do
+                if ! kill -0 $FABRICS_PID 2>/dev/null; then
+                  echo "ERROR: mxl-fabrics-demo exited prematurely. Output:"
+                  cat "$FABRICS_LOG"
+                  exit 1
+                fi
+                sleep 0.5
+              done
+              cat "$FABRICS_LOG"
 
-              sed 's/.*Target info: //' /tmp/fabrics-ti.txt | tr -d ' \r\n' > /target-info/target-info.txt
+              grep "Target info:" "$FABRICS_LOG" | sed 's/.*Target info: //' | tr -d ' \r\n' > /target-info/target-info.txt
               echo "Target info published for discovery"
 
               echo "Waiting for video flow in /domain..."
