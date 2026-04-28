@@ -46,6 +46,11 @@ spec:
             runAsGroup: 0
             capabilities:
               add: [IPC_LOCK, SYS_RESOURCE]
+          env:
+            - name: FI_VERBS_IFACE
+              value: "net1"
+            - name: FI_PROVIDER
+              value: "verbs"
           command: ["/bin/sh", "-c"]
           args:
             - |
