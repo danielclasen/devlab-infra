@@ -27,6 +27,7 @@ spec:
         k8s.v1.cni.cncf.io/networks: network/rdma-roce
     spec:
       # Reader and writer must land on different nodes for cross-node RDMA.
+      hostNetwork: true
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
