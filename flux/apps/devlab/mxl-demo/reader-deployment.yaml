@@ -51,6 +51,8 @@ spec:
               rm -rf /domain/*
               rm -f /target-info/target-info.txt
 
+              ulimit -l unlimited || true
+
               NODE_IP=$(awk '/\|--/{ip=$2} /\/32 host LOCAL/{print ip}' /proc/net/fib_trie | grep -v '^127\.' | grep -v '^10\.244\.' | sort -u | head -1)
               echo "RDMA node IP: $NODE_IP"
 
