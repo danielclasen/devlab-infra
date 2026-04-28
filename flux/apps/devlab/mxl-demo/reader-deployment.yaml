@@ -51,10 +51,13 @@ spec:
               rm -rf /domain/*
               rm -f /target-info/target-info.txt
 
+              NODE_IP=$(ip addr show net1 | awk '/inet /{print $2}' | cut -d/ -f1)
+              echo "RDMA node IP: $NODE_IP"
+
               FIFO=/tmp/fabrics-fifo
               rm -f $FIFO && mkfifo $FIFO
 
-              /usr/bin/mxl-fabrics-demo -d /domain -f /usr/share/mxl/data/v210_flow.json -p verbs > $FIFO 2>&1 &
+              /usr/bin/mxl-fabrics-demo -d /domain -f /usr/share/mxl/data/v210_flow.json -p verbs --node "$NODE_IP" > $FIFO 2>&1 &
               FABRICS_PID=$!
 
               {

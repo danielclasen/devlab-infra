@@ -47,6 +47,9 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
+              NODE_IP=$(ip addr show net1 | awk '/inet /{print $2}' | cut -d/ -f1)
+              echo "RDMA node IP: $NODE_IP"
+
               /usr/bin/mxl-gst-testsrc -d /domain -v /home/mxl/v210_flow.json -a /home/mxl/audio_flow.json &
               WRITER_PID=$!
 
@@ -68,7 +71,7 @@ spec:
                       else
                         echo "Starting fabrics initiator..."
                       fi
-                      /usr/bin/mxl-fabrics-demo -d /domain -f 5fbec3b1-1b0f-417d-9059-8b94a47197ed -i -p verbs --target-info "$TARGET_INFO" &
+                      /usr/bin/mxl-fabrics-demo -d /domain -f 5fbec3b1-1b0f-417d-9059-8b94a47197ed -i -p verbs --node "$NODE_IP" --target-info "$TARGET_INFO" &
                       FABRICS_PID=$!
                       LAST_TARGET="$TARGET_INFO"
                     fi
