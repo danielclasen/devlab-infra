@@ -39,7 +39,7 @@ spec:
 
       containers:
         - name: writer-container
-          image: oci.clsn.dev/mxl-writer:latest
+          image: oci.clsn.dev/mxl-writer:cx4-rdma
           imagePullPolicy: IfNotPresent
           securityContext:
             capabilities:
