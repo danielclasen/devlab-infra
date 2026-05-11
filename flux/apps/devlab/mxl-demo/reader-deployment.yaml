@@ -96,6 +96,10 @@ spec:
 
               wait $FABRICS_PID
 
+          ports:
+            - name: srt-video
+              containerPort: 5000
+              protocol: UDP
           resources:
             limits:
               rdma/hca_shared_devices: "1"

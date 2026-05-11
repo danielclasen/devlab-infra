@@ -11,3 +11,7 @@ spec:
     - name: target-info
       port: 8080
       targetPort: 8080
+    - name: srt-video
+      port: 5000
+      targetPort: 5000
+      protocol: UDP
