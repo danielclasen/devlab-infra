@@ -167,10 +167,10 @@ spec:
               protocol: UDP
           resources:
             limits:
-              cpu: "2"
+              cpu: "4"
               memory: "2Gi"
             requests:
-              cpu: "500m"
+              cpu: "1"
               memory: "256Mi"
           volumeMounts:
             - name: domain-volume
