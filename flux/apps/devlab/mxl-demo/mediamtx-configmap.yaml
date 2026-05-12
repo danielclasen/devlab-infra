@@ -22,8 +22,11 @@ data:
     hls: yes
     hlsAddress: :8888
     hlsAllowOrigins: ['*']
-    # Low-latency HLS: short segments, short parts.
-    hlsSegmentCount: 3
+    # Low-latency HLS needs >= 7 segments. Tradeoff: each segment is ~1s
+    # of buffering so the initial delay is ~7s. For a fast-start
+    # alternative switch hlsVariant to "mpegts" or "fmp4".
+    hlsVariant: lowLatency
+    hlsSegmentCount: 7
     hlsSegmentDuration: 1s
     hlsPartDuration: 200ms
 
