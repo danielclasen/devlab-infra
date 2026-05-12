@@ -1,0 +1,43 @@
+---
+# mediamtx configuration for the in-pod MXL → RTSP/HLS/WebRTC/SRT/RTMP republisher.
+# Mounted at /mediamtx.yml inside the mediamtx sidecar container.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mediamtx-config
+  namespace: mxl-demo
+data:
+  mediamtx.yml: |
+    logLevel: info
+    api: no
+    metrics: no
+
+    # All listeners on 0.0.0.0.
+    rtsp: yes
+    rtspAddress: :8554
+
+    rtmp: yes
+    rtmpAddress: :1935
+
+    hls: yes
+    hlsAddress: :8888
+    hlsAllowOrigins: ['*']
+    # Low-latency HLS: short segments, short parts.
+    hlsSegmentCount: 3
+    hlsSegmentDuration: 1s
+    hlsPartDuration: 200ms
+
+    webrtc: yes
+    webrtcAddress: :8889
+    webrtcAllowOrigins: ['*']
+    webrtcLocalUDPAddress: :8189
+    # webrtcAdditionalHosts is set at runtime via MTX_WEBRTCADDITIONALHOSTS
+    # (downward API node IP) so the SDP advertises an address the browser
+    # can actually reach via the NodePort.
+
+    srt: yes
+    srtAddress: :8890
+
+    paths:
+      mxl_test:
+        source: mxl:///domain/5fbec3b1-1b0f-417d-9059-8b94a47197ed

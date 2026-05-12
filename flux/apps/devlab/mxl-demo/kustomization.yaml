@@ -5,3 +5,5 @@ resources:
   - reader-service.yaml
   - reader-deployment.yaml
   - writer-deployment.yaml
+  - mediamtx-configmap.yaml
+  - mediamtx-service.yaml

@@ -119,6 +119,67 @@ spec:
             - name: dev-infiniband
               mountPath: /dev/infiniband
 
+        # Temporary sidecar: republishes the MXL flow over
+        # RTSP/RTMP/HLS/WebRTC/SRT via a patched mediamtx build with the
+        # in-tree MXL static source. The fabrics receiver above keeps
+        # populating /domain; this container just consumes from it.
+        - name: mediamtx
+          image: oci.clsn.dev/mediamtx-mxl:dev
+          imagePullPolicy: Always
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            # mediamtx env-override: comma-separated list of additional
+            # WebRTC host addresses that get advertised in the SDP. With
+            # NodePort exposure the browser hits a node IP, so we
+            # advertise the node hosting this pod.
+            - name: MTX_WEBRTCADDITIONALHOSTS
+              value: "$(NODE_IP)"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for MXL flow file in /domain..."
+              while [ -z "$(ls /domain 2>/dev/null | grep '.mxl-flow')" ]; do
+                sleep 0.5
+              done
+              echo "MXL flow present, starting mediamtx with NODE_IP=$NODE_IP"
+              exec /mediamtx /etc/mediamtx/mediamtx.yml
+          ports:
+            - name: rtsp
+              containerPort: 8554
+              protocol: TCP
+            - name: rtmp
+              containerPort: 1935
+              protocol: TCP
+            - name: hls
+              containerPort: 8888
+              protocol: TCP
+            - name: webrtc-http
+              containerPort: 8889
+              protocol: TCP
+            - name: webrtc-ice
+              containerPort: 8189
+              protocol: UDP
+            - name: srt
+              containerPort: 8890
+              protocol: UDP
+          resources:
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+          volumeMounts:
+            - name: domain-volume
+              mountPath: /domain
+              readOnly: true
+            - name: mediamtx-config
+              mountPath: /etc/mediamtx
+              readOnly: true
+
         - name: target-info-server
           image: busybox:1.36
           command: ["/bin/sh", "-c"]
@@ -151,3 +212,6 @@ spec:
         - name: dev-infiniband
           hostPath:
             path: /dev/infiniband
+        - name: mediamtx-config
+          configMap:
+            name: mediamtx-config
